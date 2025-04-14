@@ -7,6 +7,9 @@
     <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/GLTFLoader.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.min.js"></script>
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.10.1/dist/ffmpeg.min.js"></script>
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+    <script src="https://unpkg.com/mux.js@6.3.0/dist/mux.min.js"></script>
     <style>
         body { 
             margin: 0; 
@@ -132,14 +135,17 @@
         
         .capture-buttons {
             display: flex;
-            gap: 8px;
+            gap: 5px;
+            flex-wrap: wrap;
         }
-        
+
         .capture-btn {
             flex: 1;
+            min-width: 60px;
             background: #33343a !important;
-            font-size: 12px;
-            padding: 6px;
+            font-size: 11px !important;
+            padding: 5px !important;
+            white-space: nowrap;
         }
         
         .transparent-btn {
@@ -227,6 +233,7 @@
         <div class="capture-buttons">
             <button id="capturePngBtn" class="capture-btn">PNG</button>
             <button id="captureJpgBtn" class="capture-btn">JPG</button>
+            <button id="captureVideoBtn" class="capture-btn">360° Video</button>
         </div>
         <div id="status">Cargando modelo...</div>
     </div>
@@ -676,6 +683,120 @@ function updateStatus(message, isError = false) {
             animateCameraReset();
         });
 
+        document.getElementById('captureVideoBtn').addEventListener('click', async function() {
+            if (!model) {
+                updateStatus("No hay modelo cargado", true);
+                return;
+            }
+
+            updateStatus("Preparando captura de video 360°...");
+            
+            try {
+                // Configuración del video
+                const duration = 8; // segundos
+                const fps = 30;
+                const videoWidth = 1280;
+                const videoHeight = 720;
+                const quality = 0.92; // Calidad de JPEG (0 a 1)
+
+                // Crear canvas temporal
+                const canvas = document.createElement('canvas');
+                canvas.width = videoWidth;
+                canvas.height = videoHeight;
+                const ctx = canvas.getContext('2d');
+
+                // Configurar FFmpeg
+                const { createFFmpeg, fetchFile } = FFmpeg;
+                const ffmpeg = createFFmpeg({ 
+                    log: true,
+                    corePath: 'https://unpkg.com/@ffmpeg/core@0.10.0/dist/ffmpeg-core.js'
+                });
+
+                updateStatus("Cargando FFmpeg... (primera vez puede tardar)");
+                await ffmpeg.load();
+
+                // Configurar renderizador temporal
+                const tempRenderer = new THREE.WebGLRenderer({
+                    antialias: true,
+                    preserveDrawingBuffer: true,
+                    powerPreference: "high-performance"
+                });
+                tempRenderer.setSize(videoWidth, videoHeight);
+                tempRenderer.outputEncoding = THREE.sRGBEncoding;
+
+                // Clonar la escena y cámara actual
+                const tempScene = scene.clone();
+                const tempCamera = camera.clone();
+                tempScene.children = [];
+                scene.children.forEach(child => tempScene.add(child.clone()));
+
+                // Variables para la rotación
+                const startPosition = tempCamera.position.clone();
+                const startTarget = controls.target.clone();
+                const startTime = Date.now();
+                const frames = [];
+                const angleIncrement = (2 * Math.PI) / (duration * fps);
+
+                // Capturar frames
+                for (let i = 0; i < duration * fps; i++) {
+                    const angle = i * angleIncrement;
+                    
+                    // Calcular nueva posición manteniendo la distancia original
+                    const radius = startPosition.distanceTo(startTarget);
+                    tempCamera.position.x = startTarget.x + Math.cos(angle) * radius;
+                    tempCamera.position.z = startTarget.z + Math.sin(angle) * radius;
+                    tempCamera.lookAt(startTarget);
+
+                    // Renderizar frame
+                    tempRenderer.render(tempScene, tempCamera);
+                    
+                    // Capturar como JPEG
+                    ctx.drawImage(tempRenderer.domElement, 0, 0, canvas.width, canvas.height);
+                    const frameData = canvas.toDataURL('image/jpeg', quality).split(',')[1];
+                    frames.push(frameData);
+                    
+                    updateStatus(`Generando video: ${Math.round(i / (duration * fps)) * 100}% completado`);
+                    await new Promise(resolve => setTimeout(resolve, 1000/fps));
+                }
+
+                updateStatus("Codificando video MP4...");
+
+                // Convertir frames a MP4 usando FFmpeg
+                for (let i = 0; i < frames.length; i++) {
+                    const frameName = `frame${i.toString().padStart(4, '0')}.jpg`;
+                    ffmpeg.FS('writeFile', frameName, await fetchFile(`data:image/jpeg;base64,${frames[i]}`));
+                }
+
+                await ffmpeg.run(
+                    '-framerate', fps.toString(),
+                    '-i', 'frame%04d.jpg',
+                    '-c:v', 'libx264',
+                    '-preset', 'slow',
+                    '-crf', '18',
+                    '-pix_fmt', 'yuv420p',
+                    '-vf', 'scale=1280:720',
+                    'output.mp4'
+                );
+
+                // Descargar el video
+                const data = ffmpeg.FS('readFile', 'output.mp4');
+                const videoBlob = new Blob([data.buffer], { type: 'video/mp4' });
+                const videoUrl = URL.createObjectURL(videoBlob);
+
+                const link = document.createElement('a');
+                link.href = videoUrl;
+                link.download = `modelo-360-${new Date().toISOString().slice(0, 10)}.mp4`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+                updateStatus("Video MP4 generado con éxito!");
+                
+            } catch (error) {
+                console.error("Error al generar video:", error);
+                updateStatus("Error al generar video: " + error.message, true);
+            }
+        });
         document.getElementById('downloadTemplateBtn').addEventListener('click', function() {
             const link = document.createElement('a');
             link.href = 'plantilla.pdf';
@@ -691,39 +812,46 @@ function updateStatus(message, isError = false) {
             const value = parseFloat(e.target.value);
             ambientLight.intensity = value;
             document.getElementById('ambientIntensityValue').textContent = value.toFixed(1);
+            renderer.render(scene, camera); // Forzar renderizado inmediato
         });
 
         document.getElementById('ambientColor').addEventListener('input', function(e) {
             ambientLight.color.set(e.target.value);
+            renderer.render(scene, camera);
         });
 
         document.getElementById('directionalIntensity').addEventListener('input', function(e) {
             const value = parseFloat(e.target.value);
-            directionalLight.intensity = value;
+            mainLight.intensity = value; // Usamos mainLight en lugar de directionalLight
             document.getElementById('directionalIntensityValue').textContent = value.toFixed(1);
+            renderer.render(scene, camera);
         });
 
         document.getElementById('directionalColor').addEventListener('input', function(e) {
-            directionalLight.color.set(e.target.value);
+            mainLight.color.set(e.target.value); // Usamos mainLight
+            renderer.render(scene, camera);
         });
 
         // Control de posición de la luz direccional
         document.getElementById('lightPosX').addEventListener('input', function(e) {
             const value = parseFloat(e.target.value);
-            directionalLight.position.x = value;
+            mainLight.position.x = value; // Cambiado de directionalLight a mainLight
             document.getElementById('lightPosXValue').textContent = value.toFixed(1);
+            renderer.render(scene, camera);
         });
 
         document.getElementById('lightPosY').addEventListener('input', function(e) {
             const value = parseFloat(e.target.value);
-            directionalLight.position.y = value;
+            mainLight.position.y = value; // Cambiado de directionalLight a mainLight
             document.getElementById('lightPosYValue').textContent = value.toFixed(1);
+            renderer.render(scene, camera);
         });
 
         document.getElementById('lightPosZ').addEventListener('input', function(e) {
             const value = parseFloat(e.target.value);
-            directionalLight.position.z = value;
+            mainLight.position.z = value; // Cambiado de directionalLight a mainLight
             document.getElementById('lightPosZValue').textContent = value.toFixed(1);
+            renderer.render(scene, camera);
         });
 
         document.getElementById('roughness').addEventListener('input', function(e) {
