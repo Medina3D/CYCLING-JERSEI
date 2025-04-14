@@ -709,177 +709,123 @@ function updateStatus(message, isError = false) {
 
     const btn = this;
     btn.disabled = true;
-    updateStatus("Preparando captura de video 360°...");
+    updateStatus("Iniciando captura de video 360°...");
     
     try {
-        // Configuración
-        const duration = 8; // segundos
-        const fps = 24;
+        // Configuración fija
+        const duration = 8; // 8 segundos exactos
+        const fps = 30; // Fluidez
         const width = 1280;
         const height = 720;
         
-        // 1. Capturar frames
-        updateStatus("Capturando frames...");
-        const frames = await captureFrames(duration, fps, width, height);
-        
-        // 2. Convertir a video
-        updateStatus("Codificando video...");
-        const videoBlob = await createVideoFromFrames(frames, fps, width, height);
-        
-        // 3. Descargar
-        downloadVideo(videoBlob);
-        updateStatus("Video MP4 generado con éxito!");
-        
-    } catch (error) {
-        console.error("Error:", error);
-        updateStatus("Error: " + error.message, true);
-    } finally {
-        btn.disabled = false;
-    }
-});
-
-// Función mejorada para capturar frames
-async function captureFrames(duration, fps, width, height) {
-    const frames = [];
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    
-    // Configuración de renderizado temporal
-    const tempRenderer = new THREE.WebGLRenderer({
-        antialias: true,
-        preserveDrawingBuffer: true,
-        canvas: document.createElement('canvas')
-    });
-    tempRenderer.setSize(width, height);
-    
-    // Clonar escena
-    const tempScene = scene.clone();
-    const tempCamera = camera.clone();
-    tempScene.children = [];
-    scene.children.forEach(child => {
-        const cloned = child.clone();
-        if (cloned.material) {
-            cloned.material = cloned.material.clone();
-        }
-        tempScene.add(cloned);
-    });
-    
-    // Posición inicial
-    const startPos = tempCamera.position.clone();
-    const target = controls.target.clone();
-    const radius = startPos.distanceTo(target);
-    
-    // Capturar cada frame
-    for (let i = 0; i < duration * fps; i++) {
-        const angle = (i / (duration * fps)) * Math.PI * 2;
-        
-        // Mover cámara en círculo
-        tempCamera.position.x = target.x + Math.cos(angle) * radius;
-        tempCamera.position.z = target.z + Math.sin(angle) * radius;
-        tempCamera.lookAt(target);
-        
-        // Renderizar
-        tempRenderer.render(tempScene, tempCamera);
-        ctx.drawImage(tempRenderer.domElement, 0, 0, width, height);
-        
-        // Guardar frame
-        frames.push(canvas.toDataURL('image/jpeg', 0.9));
-        
-        // Mostrar progreso cada 10 frames
-        if (i % 10 === 0) {
-            updateStatus(`Capturando: ${Math.round((i / (duration * fps)) * 100)}%`);
-            await new Promise(r => setTimeout(r, 0)); // Liberar el hilo
-        }
-    }
-    
-    return frames;
-}
-
-// Función para crear video sin mux.js
-async function createVideoFromFrames(frames, fps, width, height) {
-    return new Promise((resolve) => {
-        // Usaremos MediaRecorder con códec preferido
+        // 1. Configurar canvas de composición
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d');
-        const stream = canvas.captureStream(0);
         
-        // Configuración de MediaRecorder
-        const options = {
-            mimeType: getSupportedMimeType(),
-            videoBitsPerSecond: 2500000 // 2.5 Mbps
+        // 2. Configurar MediaRecorder
+        const stream = canvas.captureStream(0);
+        const recorder = new MediaRecorder(stream, {
+            mimeType: 'video/webm;codecs=vp9',
+            videoBitsPerSecond: 5000000 // 5 Mbps para mejor calidad
+        });
+        
+        // Variables de estado
+        const startTime = performance.now();
+        const endTime = startTime + duration * 1000;
+        const startPosition = camera.position.clone();
+        const target = controls.target.clone();
+        const radius = startPosition.distanceTo(target);
+        
+        // 3. Función de captura
+        const captureFrame = () => {
+            const currentTime = performance.now();
+            const elapsed = Math.min(duration * 1000, currentTime - startTime);
+            const progress = elapsed / (duration * 1000);
+            
+            // Calcular ángulo (0 a 2π)
+            const angle = progress * Math.PI * 2;
+            
+            // Posicionar cámara
+            camera.position.x = target.x + Math.cos(angle) * radius;
+            camera.position.z = target.z + Math.sin(angle) * radius;
+            camera.lookAt(target);
+            
+            // Renderizar
+            renderer.render(scene, camera);
+            
+            // Dibujar fondo si existe
+            if (scene.background) {
+                if (scene.background instanceof THREE.Color) {
+                    ctx.fillStyle = `#${scene.background.getHexString()}`;
+                    ctx.fillRect(0, 0, width, height);
+                } else if (scene.background.isTexture) {
+                    // Manejo de textura de fondo
+                    ctx.save();
+                    const image = scene.background.image;
+                    const imgAspect = image.width / image.height;
+                    const canvasAspect = width / height;
+                    
+                    if (imgAspect > canvasAspect) {
+                        const h = height;
+                        const w = height * imgAspect;
+                        ctx.drawImage(image, (width - w)/2, 0, w, h);
+                    } else {
+                        const w = width;
+                        const h = width / imgAspect;
+                        ctx.drawImage(image, 0, (height - h)/2, w, h);
+                    }
+                    ctx.restore();
+                }
+            }
+            
+            // Dibujar render 3D
+            ctx.drawImage(renderer.domElement, 0, 0, width, height);
+            
+            // Mostrar progreso real (0% a 100%)
+            const percent = Math.floor(progress * 100);
+            updateStatus(`Progreso: ${percent}%`);
+            
+            // Continuar o finalizar
+            if (currentTime < endTime) {
+                requestAnimationFrame(captureFrame);
+            }
         };
         
-        const recorder = new MediaRecorder(stream, options);
-        const chunks = [];
-        
-        recorder.ondataavailable = (e) => chunks.push(e.data);
+        // 4. Iniciar grabación
+        const videoChunks = [];
+        recorder.ondataavailable = (e) => videoChunks.push(e.data);
         recorder.onstop = () => {
-            const blob = new Blob(chunks, { type: options.mimeType });
-            resolve(blob);
+            const videoBlob = new Blob(videoChunks, { type: 'video/webm' });
+            const videoUrl = URL.createObjectURL(videoBlob);
+            
+            const link = document.createElement('a');
+            link.href = videoUrl;
+            link.download = `360-giro-${new Date().toISOString().slice(0,10)}.webm`;
+            link.click();
+            
+            setTimeout(() => URL.revokeObjectURL(videoUrl), 100);
+            updateStatus("Video 360° generado con éxito");
+            btn.disabled = false;
         };
         
         recorder.start();
+        captureFrame(); // Iniciar captura
         
-        // Codificar frames
-        let frameIndex = 0;
-        const encodeInterval = setInterval(() => {
-            if (frameIndex >= frames.length) {
-                clearInterval(encodeInterval);
+        // Detener automáticamente después de 8 segundos
+        setTimeout(() => {
+            if (recorder.state === 'recording') {
                 recorder.stop();
-                return;
             }
-            
-            const img = new Image();
-            img.onload = () => {
-                ctx.drawImage(img, 0, 0, width, height);
-                frameIndex++;
-                
-                // Actualizar progreso
-                if (frameIndex % 10 === 0) {
-                    updateStatus(`Codificando: ${Math.round((frameIndex / frames.length) * 100)}%`);
-                }
-            };
-            img.src = frames[frameIndex];
-        }, 1000 / fps);
-    });
-}
-
-// Función para obtener el mejor códec soportado
-function getSupportedMimeType() {
-    const types = [
-        'video/webm;codecs=h264',
-        'video/webm;codecs=vp9',
-        'video/webm;codecs=vp8',
-        'video/webm'
-    ];
-    
-    for (const type of types) {
-        if (MediaRecorder.isTypeSupported(type)) {
-            return type;
-        }
+        }, duration * 1000 + 500); // Margen de seguridad
+        
+    } catch (error) {
+        console.error("Error:", error);
+        updateStatus("Error: " + error.message, true);
+        btn.disabled = false;
     }
-    
-    return 'video/webm'; // Fallback
-}
-
-// Función de descarga
-function downloadVideo(blob) {
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `modelo-360-${new Date().toISOString().slice(0,10)}.mp4`;
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(() => {
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-    }, 100);
-}
-
+});
         document.getElementById('downloadTemplateBtn').addEventListener('click', function() {
             const link = document.createElement('a');
             link.href = 'plantilla.pdf';
