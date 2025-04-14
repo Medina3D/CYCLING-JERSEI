@@ -720,10 +720,10 @@ function updateStatus(message, isError = false) {
         
         // Calcular dimensiones manteniendo relación de aspecto
         if (window.innerWidth / window.innerHeight > targetAspect) {
-            height = 720;
+            height = 2880;
             width = Math.round(height * targetAspect);
         } else {
-            width = 1280;
+            width = 5120;
             height = Math.round(width / targetAspect);
         }
         
