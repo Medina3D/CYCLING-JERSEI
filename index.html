@@ -709,22 +709,36 @@ function updateStatus(message, isError = false) {
 
     const btn = this;
     btn.disabled = true;
-    updateStatus("Preparando grabación 360°...");
+    updateStatus("Iniciando grabación 360°...");
     
     try {
-        // 1. Configuración básica
-        const duration = 8; // segundos
+        // 1. Configuración con relación de aspecto fija (16:9)
+        const duration = 8;
         const fps = 30;
-        const width = 1280;
-        const height = 720;
+        const targetAspect = 16 / 9;
+        let width, height;
         
-        // 2. Crear canvas de captura
+        // Calcular dimensiones manteniendo relación de aspecto
+        if (window.innerWidth / window.innerHeight > targetAspect) {
+            height = 720;
+            width = Math.round(height * targetAspect);
+        } else {
+            width = 1280;
+            height = Math.round(width / targetAspect);
+        }
+        
+        // 2. Configurar canvas con padding para mantener relación de aspecto
         const captureCanvas = document.createElement('canvas');
         captureCanvas.width = width;
         captureCanvas.height = height;
         const ctx = captureCanvas.getContext('2d');
         
-        // 3. Configurar MediaRecorder con códec universal
+        // Color de padding (usar color de fondo o negro)
+        const paddingColor = scene.background instanceof THREE.Color 
+            ? `#${scene.background.getHexString()}` 
+            : '#000000';
+        
+        // 3. Configurar MediaRecorder
         const stream = captureCanvas.captureStream(fps);
         const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') 
             ? 'video/webm;codecs=vp9' 
@@ -732,26 +746,21 @@ function updateStatus(message, isError = false) {
         
         const recorder = new MediaRecorder(stream, {
             mimeType: mimeType,
-            videoBitsPerSecond: 8000000 // 8 Mbps
+            videoBitsPerSecond: 8000000
         });
 
-        // 4. Variables para la rotación
+        // 4. Variables para rotación
         const center = controls.target.clone();
         const startPos = camera.position.clone();
         const radius = startPos.distanceTo(center);
         const startAngle = Math.atan2(startPos.z - center.z, startPos.x - center.x);
-        
-        // 5. Capturar frames
         const startTime = performance.now();
-        const frameTimes = [];
-        let framesCaptured = 0;
         
+        // 5. Función de renderizado con relación de aspecto fija
         function renderFrame() {
-            const currentTime = performance.now();
-            const elapsed = (currentTime - startTime) / 1000;
-            const progress = Math.min(1, elapsed / duration);
+            const progress = Math.min(1, (performance.now() - startTime) / (duration * 1000));
             
-            // Calcular nueva posición
+            // Calcular posición cámara
             const angle = startAngle + (progress * Math.PI * 2);
             camera.position.x = center.x + Math.cos(angle) * radius;
             camera.position.z = center.z + Math.sin(angle) * radius;
@@ -761,33 +770,32 @@ function updateStatus(message, isError = false) {
             // Renderizar escena
             renderer.render(scene, camera);
             
-            // Dibujar fondo
-            if (scene.background instanceof THREE.Color) {
-                ctx.fillStyle = `#${scene.background.getHexString()}`;
-                ctx.fillRect(0, 0, width, height);
-            } else if (scene.background?.isTexture) {
-                // Manejo profesional de textura de fondo
-                const img = scene.background.image;
-                const imgAspect = img.width / img.height;
-                const canvasAspect = width / height;
-                
-                if (imgAspect > canvasAspect) {
-                    const h = height;
-                    const w = height * imgAspect;
-                    ctx.drawImage(img, (width - w)/2, 0, w, h);
-                } else {
-                    const w = width;
-                    const h = width / imgAspect;
-                    ctx.drawImage(img, 0, (height - h)/2, w, h);
-                }
+            // Limpiar canvas con color de padding
+            ctx.fillStyle = paddingColor;
+            ctx.fillRect(0, 0, width, height);
+            
+            // Calcular dimensiones para mantener relación de aspecto
+            const renderAspect = renderer.domElement.width / renderer.domElement.height;
+            let drawWidth, drawHeight, offsetX, offsetY;
+            
+            if (renderAspect > targetAspect) {
+                drawHeight = height;
+                drawWidth = height * renderAspect;
+                offsetX = (width - drawWidth) / 2;
+                offsetY = 0;
+            } else {
+                drawWidth = width;
+                drawHeight = width / renderAspect;
+                offsetX = 0;
+                offsetY = (height - drawHeight) / 2;
             }
             
-            // Dibujar render 3D
-            ctx.drawImage(renderer.domElement, 0, 0, width, height);
-            
-            // Registrar tiempo del frame
-            frameTimes.push(performance.now());
-            framesCaptured++;
+            // Dibujar render 3D centrado
+            ctx.drawImage(
+                renderer.domElement, 
+                0, 0, renderer.domElement.width, renderer.domElement.height,
+                offsetX, offsetY, drawWidth, drawHeight
+            );
             
             updateStatus(`Progreso: ${Math.floor(progress * 100)}%`);
             
@@ -798,49 +806,37 @@ function updateStatus(message, isError = false) {
         
         // 6. Configurar grabación
         const videoChunks = [];
-        recorder.ondataavailable = (e) => {
-            if (e.data && e.data.size > 0) {
-                videoChunks.push(e.data);
-            }
-        };
-        
+        recorder.ondataavailable = (e) => e.data.size > 0 && videoChunks.push(e.data);
         recorder.onstop = () => {
             if (videoChunks.length === 0) {
-                updateStatus("Error: No se recibieron datos de video", true);
-                btn.disabled = false;
+                updateStatus("Error: No se capturaron datos", true);
                 return;
             }
             
-            const videoBlob = new Blob(videoChunks, { type: mimeType });
-            const videoUrl = URL.createObjectURL(videoBlob);
+            const blob = new Blob(videoChunks, { type: mimeType });
+            const url = URL.createObjectURL(blob);
             
             const link = document.createElement('a');
-            link.href = videoUrl;
+            link.href = url;
             link.download = `360-video-${new Date().toISOString().slice(0,10)}.webm`;
-            document.body.appendChild(link);
             link.click();
             
             setTimeout(() => {
-                document.body.removeChild(link);
-                URL.revokeObjectURL(videoUrl);
-                updateStatus(`Video generado!`);
+                URL.revokeObjectURL(url);
+                updateStatus("Video generado correctamente!");
                 btn.disabled = false;
             }, 100);
         };
         
-        // 7. Iniciar grabación
-        recorder.start(100); // Emitir chunks cada 100ms
-        renderFrame(); // Comenzar captura
+        // 7. Iniciar proceso
+        recorder.start(100);
+        renderFrame();
         
-        // 8. Detener después de la duración exacta
-        setTimeout(() => {
-            if (recorder.state === 'recording') {
-                recorder.stop();
-            }
-        }, duration * 1000 + 500);
-
+        // 8. Detener automáticamente
+        setTimeout(() => recorder.state === 'recording' && recorder.stop(), duration * 1000 + 500);
+        
     } catch (error) {
-        console.error("Error en grabación:", error);
+        console.error("Error:", error);
         updateStatus(`Error: ${error.message}`, true);
         btn.disabled = false;
     }
