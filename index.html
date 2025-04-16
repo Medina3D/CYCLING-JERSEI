@@ -475,6 +475,23 @@ scene.add(backLight);
             controls.target.copy(center);
             controls.update();
 
+            textureLoader.load('diseño_base.jpg', function(texture) {
+        texture.flipY = false;
+        texture.encoding = THREE.sRGBEncoding;
+        
+        targetTextures.forEach(item => {
+            const newMaterial = item.material.clone();
+            newMaterial.map = texture;
+            newMaterial.needsUpdate = true;
+            item.node.material = newMaterial;
+        });
+        
+        updateStatus("Diseño base aplicado automáticamente");
+        renderer.render(scene, camera);
+    }, undefined, function(error) {
+        console.log("No se encontró diseño_base.jpg - Se usará textura original");
+    });
+
         }, undefined, function(error) {
             console.error("Error:", error);
             updateStatus("Error al cargar el modelo", true);
