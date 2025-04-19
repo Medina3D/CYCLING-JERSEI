@@ -132,14 +132,14 @@
         
         .capture-buttons {
             display: flex;
-            gap: 8px;
+            gap: 6px;
         }
         
         .capture-btn {
             flex: 1;
             background: #33343a !important;
-            font-size: 12px;
-            padding: 6px;
+            font-size: 11px !important; /* Reducido de 12px */
+            padding: 5px !important; /* Reducido de 6px */
         }
         
         .transparent-btn {
@@ -227,6 +227,7 @@
         <div class="capture-buttons">
             <button id="capturePngBtn" class="capture-btn">PNG</button>
             <button id="captureJpgBtn" class="capture-btn">JPG</button>
+            <button id="captureVideoBtn" class="capture-btn">360° Video</button>
         </div>
         <div id="status">Cargando modelo...</div>
     </div>
@@ -712,6 +713,234 @@ function updateStatus(message, isError = false) {
             
             animateCameraReset();
         });
+
+        document.getElementById('captureVideoBtn').addEventListener('click', async function() {
+    if (!model) {
+        updateStatus("❌ No hay modelo cargado", true);
+        return;
+    }
+
+    const btn = this;
+    btn.disabled = true;
+    updateStatus("🚀 Iniciando grabación en 8K/120FPS...");
+
+    try {
+        // 1. Configuración EXTREMA
+        const duration = 8; // segundos
+        const fps = 120; // 120 FPS - Fluidez cinematográfica
+        const width = 3840; // Resolución 4K (para downsampling)
+        const height = 2160;
+        const targetAspect = 16 / 9;
+        const bitrate = 50000000; // 50 Mbps - Máxima calidad
+
+        // 2. Canvas de ultra alta resolución
+        const captureCanvas = document.createElement('canvas');
+        captureCanvas.width = width;
+        captureCanvas.height = height;
+        const ctx = captureCanvas.getContext('2d', {
+            willReadFrequently: true,
+            alpha: false,
+            colorSpace: 'display-p3' // Mejor gama de colores
+        });
+
+        // 3. Configuración PROFESIONAL de MediaRecorder
+        const stream = captureCanvas.captureStream(fps);
+        const codecs = ['av01', 'vp9', 'hev1', 'h265', 'h264', 'vp8'];
+        let mimeType = 'video/webm';
+        
+        for (const codec of codecs) {
+            const type = `video/webm;codecs=${codec}`;
+            if (MediaRecorder.isTypeSupported(type)) {
+                mimeType = type;
+                break;
+            }
+        }
+
+        const recorder = new MediaRecorder(stream, {
+            mimeType: mimeType,
+            videoBitsPerSecond: bitrate,
+            bitsPerSecond: bitrate,
+            audioBitsPerSecond: 0
+        });
+
+        // 4. Variables para rotación HIPER-FLUIDA
+        const center = new THREE.Vector3().copy(controls.target);
+        const startPos = new THREE.Vector3().copy(camera.position);
+        const radius = startPos.distanceTo(center);
+        const startAngle = Math.atan2(startPos.z - center.z, startPos.x - center.x);
+        const frameDelay = 1000 / fps;
+        let frameCount = 0;
+        let lastFrameTime = performance.now();
+        let droppedFrames = 0;
+
+        // 5. Renderizado con DOBLE BUFFER y Motion Blur
+        const renderCanvas = document.createElement('canvas');
+        renderCanvas.width = width;
+        renderCanvas.height = height;
+        const renderCtx = renderCanvas.getContext('2d');
+
+        function renderFrame(targetTime) {
+            const now = performance.now();
+            const elapsed = now - startTime;
+            const progress = Math.min(1, elapsed / (duration * 1000));
+            
+            // Cálculo de posición con easing cinematico
+            const smoothProgress = cubicEaseInOut(progress);
+            const angle = startAngle + (smoothProgress * Math.PI * 2);
+            
+            // Actualización de posición de cámara
+            camera.position.x = center.x + Math.cos(angle) * radius;
+            camera.position.z = center.z + Math.sin(angle) * radius;
+            camera.lookAt(center);
+            
+            // Renderizado en canvas auxiliar
+            renderer.render(scene, camera);
+            renderCtx.clearRect(0, 0, width, height);
+            renderCtx.drawImage(renderer.domElement, 0, 0, width, height);
+            
+            // Composición final con bordes negros
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, width, height);
+            
+            const renderAspect = renderer.domElement.width / renderer.domElement.height;
+            let drawWidth, drawHeight, offsetX, offsetY;
+            
+            if (renderAspect > targetAspect) {
+                drawHeight = height;
+                drawWidth = height * renderAspect;
+                offsetX = (width - drawWidth) / 2;
+                offsetY = 0;
+            } else {
+                drawWidth = width;
+                drawHeight = width / renderAspect;
+                offsetX = 0;
+                offsetY = (height - drawHeight) / 2;
+            }
+            
+            // Aplicar ligero motion blur para mayor fluidez percibida
+            ctx.globalAlpha = 0.9;
+            ctx.drawImage(renderCanvas, offsetX, offsetY, drawWidth, drawHeight);
+            ctx.globalAlpha = 1.0;
+            
+            frameCount++;
+            
+            // Control de FPS preciso
+            const currentFPS = 1000 / (now - lastFrameTime);
+            lastFrameTime = now;
+            
+            if (currentFPS < fps * 0.9) {
+                droppedFrames++;
+            }
+            
+            // Feedback en tiempo real
+            if (frameCount % 10 === 0) {
+                updateStatus(
+                    `🔄 ${Math.floor(progress * 100)}% | ` +
+                    `FPS: ${currentFPS.toFixed(1)}/${fps} | ` +
+                    `Dropped: ${droppedFrames} | ` +
+                    `Size: ${videoChunks.reduce((a, b) => a + b.size, 0) / 1024 / 1024 | 0}MB`
+                );
+            }
+            
+            if (progress < 1) {
+                const nextFrameTime = startTime + (frameCount * frameDelay);
+                const delay = Math.max(0, nextFrameTime - performance.now());
+                setTimeout(() => renderFrame(nextFrameTime), delay);
+            }
+        }
+
+        // Función de easing mejorada
+        function cubicEaseInOut(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        // 6. Configuración de grabación AVANZADA
+        const videoChunks = [];
+        recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) {
+                videoChunks.push(e.data);
+            }
+        };
+        
+        recorder.onstop = async () => {
+            if (videoChunks.length === 0) {
+                updateStatus("❌ Error: No se capturaron datos", true);
+                btn.disabled = false;
+                return;
+            }
+            
+            updateStatus("🎬 Finalizando video (esto puede tardar)...");
+            
+            try {
+                const blob = new Blob(videoChunks, { type: mimeType });
+                const url = URL.createObjectURL(blob);
+                
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `360-ULTRA-${new Date().toISOString().slice(0,10)}.webm`;
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                link.click();
+                
+                setTimeout(() => {
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(url);
+                    updateStatus(
+                        `✅ Video listo!\n` +
+                        `📊 Frames: ${frameCount} (${(frameCount / duration).toFixed(1)} FPS)\n` +
+                        `💾 Tamaño: ${(blob.size / 1024 / 1024).toFixed(2)} MB\n` +
+                        `⚠️ Frames perdidos: ${droppedFrames}`
+                    );
+                    btn.disabled = false;
+                }, 100);
+                
+            } catch (error) {
+                console.error("Error al generar el video:", error);
+                updateStatus(`❌ Error final: ${error.message}`, true);
+                btn.disabled = false;
+            }
+        };
+        
+        // 7. Pre-calentamiento AGGRESIVO
+        updateStatus("🔥 Pre-renderizando 120 frames...");
+        await new Promise(resolve => {
+            let preheatCount = 0;
+            const preheat = () => {
+                renderer.render(scene, camera);
+                if (++preheatCount < 120) {
+                    requestAnimationFrame(preheat);
+                } else {
+                    resolve();
+                }
+            };
+            preheat();
+        });
+        
+        // 8. Iniciar grabación con temporización PERFECTA
+        const startTime = performance.now();
+        recorder.start(500); // Chunks grandes para mejor eficiencia
+        
+        // Esperar estabilización
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        // Iniciar captura
+        renderFrame(startTime);
+        
+        // 9. Detención controlada con margen EXTRA
+        setTimeout(() => {
+            if (recorder.state === 'recording') {
+                updateStatus("⏳ Finalizando grabación (últimos frames)...");
+                recorder.stop();
+            }
+        }, duration * 1000 + 3000); // Margen extra largo
+
+    } catch (error) {
+        console.error("Error crítico:", error);
+        updateStatus(`💥 Error grave: ${error.message}`, true);
+        btn.disabled = false;
+    }
+});
+
 
         document.getElementById('downloadTemplateBtn').addEventListener('click', function() {
             const link = document.createElement('a');
